@@ -2,6 +2,7 @@ import json
 import sys
 import unicodedata
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -60,8 +61,10 @@ def artist(artist_slug):
                 .replace("â", "a")
                 .replace(" ", "-") == performance["venue"]
             )
+            start = datetime.fromisoformat(performance["start"])
+            end = start + timedelta(minutes=performance["duration_minutes"])
             print(
-                f"{performance['start'].replace('T', ' ')} | "
+                f"{start:%a %d %H:%M}-{end:%H:%M} | "
                 f"{venue_name} | {performance['title']} ({role})"
             )
 if len(sys.argv) > 1 and sys.argv[1] == "venues":
@@ -76,6 +79,88 @@ if len(sys.argv) > 1 and sys.argv[1] == "artist":
     artist(artist_slug)
     raise SystemExit
 
+# Step 04
+def programme(day):
+    days = sorted({performance["start"][:10] for performance in festival["performances"]})
+    if day not in days:
+        print(f"No performance on '{day}'. Days: {', '.join(days)}")
+        return
+
+    venue_names = {
+        venue["name"].lower()
+        .replace("é", "e")
+        .replace("â", "a")
+        .replace(" ", "-"): venue["name"]
+        for venue in festival["venues"]
+    }
+    programme_day = datetime.fromisoformat(day)
+    print(f"Programme for {programme_day.strftime('%A')} {programme_day.day} "
+          f"{programme_day.strftime('%B')}:")
+    for performance in festival["performances"]:
+        start = datetime.fromisoformat(performance["start"])
+        festival_day = (start - timedelta(hours=6)).date()
+        if festival_day.isoformat() == day:
+            end = start + timedelta(minutes=performance["duration_minutes"])
+            venue_name = venue_names[performance["venue"]]
+            print(
+                f"{start:%H:%M}-{end:%H:%M} | {venue_name} | "
+                f"{performance['title']} ({performance['kind']})"
+            )
+
+def now(now_time):
+    venue_names = {
+        venue["name"].lower()
+        .replace("é", "e")
+        .replace("â", "a")
+        .replace(" ", "-"): venue["name"]
+        for venue in festival["venues"]
+    }
+
+    print(f"On stage at {now_time:%Y-%m-%d %H:%M}:")
+    upcoming = []
+    for performance in festival["performances"]:
+        start = datetime.fromisoformat(performance["start"])
+        end = start + timedelta(minutes=performance["duration_minutes"])
+        if start <= now_time < end:
+            print(
+                f"- {performance['title']} at "
+                f"{venue_names[performance['venue']]}, until {end:%H:%M}"
+            )
+        elif start > now_time:
+            upcoming.append((start, end, performance))
+
+    current_festival_day = now_time.date()
+    if now_time.hour < 6:
+        current_festival_day -= timedelta(days=1)
+    upcoming = [
+        item for item in upcoming
+        if (
+            item[0].date()
+            - timedelta(days=1 if item[0].hour < 6 else 0)
+        ) >= current_festival_day
+    ]
+    if upcoming:
+        print("Up next:")
+        for start, end, performance in sorted(upcoming)[:3]:
+            print(
+                f"- {start:%H:%M}-{end:%H:%M} | "
+                f"{venue_names[performance['venue']]} | "
+                f"{performance['title']} ({performance['kind']})"
+            )
+if len(sys.argv) > 1 and sys.argv[1] == "programme":
+    if len(sys.argv) < 3:
+        print("Please provide a day (YYYY-MM-DD).")
+        raise SystemExit
+    day = sys.argv[2]
+    programme(day)
+    raise SystemExit
+
+if len(sys.argv) > 1 and sys.argv[1] == "now":
+    if len(sys.argv) < 3:
+        print("Please provide a date and time (YYYY-MM-DDTHH:MM).")
+        raise SystemExit
+    now(datetime.fromisoformat(sys.argv[2]))
+    raise SystemExit
 
 
 # Step 00
@@ -86,7 +171,6 @@ print(
     f'{len(festival["artists"])} artists, '
     f'{len(festival["performances"])} performances'
 )
-
 
 # Step 01
 print("\nVenues:")
