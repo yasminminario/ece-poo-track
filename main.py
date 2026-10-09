@@ -15,31 +15,36 @@ except (FileNotFoundError, json.JSONDecodeError) as error:
     raise SystemExit(1)
 
 # Step 03
+def slug(text):
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode().lower()
+    text = "".join(character if character.isalnum() else " " for character in text)
+    return "-".join(text.split())
+
 def venues():
     total_seats = 0
     for venue in festival["venues"]:
-        venue_slug = (
-            venue["name"].lower()
-            .replace("é", "e")
-            .replace("â", "a")
-            .replace(" ", "-")
-        )
+        venue_slug = slug(venue["name"])
         print(f"{venue_slug}: {venue['name']}, {venue['capacity']} seats")
         total_seats += venue["capacity"]
     print(f"Total: {total_seats} seats")
 
+def performance_start(performance):
+    return datetime.fromisoformat(performance["start"])
+
+def performance_end(performance):
+    return performance_start(performance) + timedelta(
+        minutes=performance["duration_minutes"]
+    )
+
+def festival_day(performance):
+    return (performance_start(performance) - timedelta(hours=6)).date()
+
+
 def artist(artist_slug):
     selected_artist = next(
-        (
-            artist for artist in festival["artists"]
-            if "".join(
-                character for character in unicodedata.normalize(
-                    "NFKD", artist["name"]
-                )
-                if not unicodedata.combining(character)
-            ).lower().replace(" ", "-") == artist_slug
-        ),
-        None,
+        (artist for artist in festival["artists"] if slug(artist["name"]) == artist_slug),
+        None
     )
     if selected_artist is None:
         print(f"No artist '{artist_slug}'.")
@@ -61,15 +66,14 @@ def artist(artist_slug):
             venue_name = next(
                 venue["name"]
                 for venue in festival["venues"]
-                if venue["name"].lower()
-                .replace("é", "e")
-                .replace("â", "a")
-                .replace(" ", "-") == performance["venue"]
+                if slug(venue["name"]) == performance["venue"]
             )
-            start = datetime.fromisoformat(performance["start"])
-            end = start + timedelta(minutes=performance["duration_minutes"])
+            start = performance_start(performance)
+            end = performance_end(performance)
+            day = festival_day(performance)
+
             print(
-                f"{start:%a %d %H:%M}-{end:%H:%M} | "
+                f"{day:%a %d} {start:%H:%M}-{end:%H:%M} | "
                 f"{venue_name} | {performance['title']} ({role})"
             )
 if len(sys.argv) > 1 and sys.argv[1] == "venues":
@@ -91,20 +95,16 @@ def programme(day):
         raise ValueError(f"'{day}' is not a day, use YYYY-MM-DD.")
 
     venue_names = {
-        venue["name"].lower()
-        .replace("é", "e")
-        .replace("â", "a")
-        .replace(" ", "-"): venue["name"]
+        slug(venue["name"]): venue["name"]
         for venue in festival["venues"]
     }
     programme_day = datetime.fromisoformat(day)
     print(f"Programme for {programme_day.strftime('%A')} {programme_day.day} "
           f"{programme_day.strftime('%B')}:")
     for performance in festival["performances"]:
-        start = datetime.fromisoformat(performance["start"])
-        festival_day = (start - timedelta(hours=6)).date()
-        if festival_day.isoformat() == day:
-            end = start + timedelta(minutes=performance["duration_minutes"])
+        start = performance_start(performance)
+        if festival_day(performance).isoformat() == day:
+            end = performance_end(performance)
             venue_name = venue_names[performance["venue"]]
             print(
                 f"{start:%H:%M}-{end:%H:%M} | {venue_name} | "
@@ -113,18 +113,15 @@ def programme(day):
 
 def now(now_time):
     venue_names = {
-        venue["name"].lower()
-        .replace("é", "e")
-        .replace("â", "a")
-        .replace(" ", "-"): venue["name"]
+        slug(venue["name"]): venue["name"]
         for venue in festival["venues"]
     }
 
     print(f"On stage at {now_time:%Y-%m-%d %H:%M}:")
     upcoming = []
     for performance in festival["performances"]:
-        start = datetime.fromisoformat(performance["start"])
-        end = start + timedelta(minutes=performance["duration_minutes"])
+        start = performance_start(performance)
+        end = performance_end(performance)
         if start <= now_time < end:
             print(
                 f"- {performance['title']} at "
@@ -138,10 +135,7 @@ def now(now_time):
         current_festival_day -= timedelta(days=1)
     upcoming = [
         item for item in upcoming
-        if (
-            item[0].date()
-            - timedelta(days=1 if item[0].hour < 6 else 0)
-        ) >= current_festival_day
+        if festival_day(item[2]) >= current_festival_day
     ]
     if upcoming:
         print("Up next:")
@@ -166,12 +160,79 @@ if len(sys.argv) > 1 and sys.argv[1] == "programme":
 
 if len(sys.argv) > 1 and sys.argv[1] == "now":
     if len(sys.argv) < 3:
-        print("Please provide a date and time (YYYY-MM-DDTHH:MM).")
-        raise SystemExit
-    now(datetime.fromisoformat(sys.argv[2]))
+        print("Error: Please provide a date and time (YYYY-MM-DDTHH:MM).")
+        raise SystemExit(1)
+
+    try:
+        now_time = datetime.fromisoformat(sys.argv[2])
+    except ValueError:
+        print(f"Error: '{sys.argv[2]}' is not a valid date and time.")
+        raise SystemExit(1)
+
+    now(now_time)
     raise SystemExit
 
 # Step 05
+
+def validate_new_performance(
+    artist_slug,
+    venue_slug,
+    start,
+    duration,
+    venue_slugs,
+    artist_names,
+):
+    if venue_slug not in venue_slugs:
+        raise ValueError(f"Unknown venue '{venue_slug}'.")
+
+    if artist_slug not in artist_names:
+        raise ValueError(f"Unknown artist '{artist_slug}'.")
+
+    if not 1 <= duration <= 360:
+        raise ValueError("Duration must be between 1 and 360 minutes.")
+
+    new_festival_day = (start - timedelta(hours=6)).date()
+    first_day = datetime.fromisoformat(festival["first_day"]).date()
+    last_day = datetime.fromisoformat(festival["last_day"]).date()
+
+    if not first_day <= new_festival_day <= last_day:
+        raise ValueError(
+            f"{new_festival_day} is not a day of the festival."
+        )
+
+    new_end = start + timedelta(minutes=duration)
+
+    for performance in festival["performances"]:
+        existing_start = performance_start(performance)
+        existing_end = performance_end(performance)
+
+        too_close = (
+            start < existing_end + timedelta(minutes=30)
+            and existing_start < new_end + timedelta(minutes=30)
+        )
+
+        if not too_close:
+            continue
+
+        if performance["venue"] == venue_slug:
+            raise ValueError(
+                f"{venue_slugs[venue_slug]} is busy with "
+                f"{performance['title']}."
+            )
+
+        performance_artists = [performance.get("artist")]
+        performance_artists += [
+            performance.get("teacher"),
+            performance.get("host"),
+        ]
+        performance_artists += performance.get("acts", [])
+
+        if artist_slug in performance_artists:
+            raise ValueError(
+                f"{artist_names[artist_slug]} is on stage in "
+                f"{performance['title']}."
+            )
+            
 def add():
     title = input("Title: ").strip()
     artist_slug = input("Artist (slug): ").strip()
@@ -189,62 +250,24 @@ def add():
             f"'{duration_text}' is not a number of minutes."
         ) from None
 
-    venue_slugs = {}
-    for venue in festival["venues"]:
-        venue_id = "".join(
-            character for character in unicodedata.normalize(
-                "NFKD", venue["name"]
-            )
-            if not unicodedata.combining(character)
-        ).lower().replace(" ", "-")
-        venue_slugs[venue_id] = venue["name"]
+    venue_slugs = {
+        slug(venue["name"]): venue["name"]
+        for venue in festival["venues"]
+    }
 
-    artist_names = {}
-    for artist in festival["artists"]:
-        artist_id = "".join(
-            character for character in unicodedata.normalize(
-                "NFKD", artist["name"]
-            )
-            if not unicodedata.combining(character)
-        ).lower().replace(" ", "-")
-        artist_names[artist_id] = artist["name"]
+    artist_names = {
+        slug(artist["name"]): artist["name"]
+        for artist in festival["artists"]
+    }
 
-    if venue_slug not in venue_slugs:
-        raise ValueError(f"Unknown venue '{venue_slug}'.")
-    if artist_slug not in artist_names:
-        raise ValueError(f"Unknown artist '{artist_slug}'.")
-    if not 1 <= duration <= 360:
-        raise ValueError("Duration must be between 1 and 360 minutes.")
-
-    festival_day = (start - timedelta(hours=6)).date()
-    first_day = datetime.fromisoformat(festival["first_day"]).date()
-    last_day = datetime.fromisoformat(festival["last_day"]).date()
-    if not first_day <= festival_day <= last_day:
-        raise ValueError(f"{festival_day} is not a day of the festival.")
-
-    new_end = start + timedelta(minutes=duration)
-    for performance in festival["performances"]:
-        existing_start = datetime.fromisoformat(performance["start"])
-        existing_end = existing_start + timedelta(
-            minutes=performance["duration_minutes"]
-        )
-        too_close = (
-            start < existing_end + timedelta(minutes=30)
-            and existing_start < new_end + timedelta(minutes=30)
-        )
-        if too_close and performance["venue"] == venue_slug:
-            raise ValueError(
-                f"{venue_slugs[venue_slug]} is busy with "
-                f"{performance['title']}."
-            )
-        performance_artists = [performance.get("artist")]
-        performance_artists += [performance.get("teacher"), performance.get("host")]
-        performance_artists += performance.get("acts", [])
-        if too_close and artist_slug in performance_artists:
-            raise ValueError(
-                f"{artist_names[artist_slug]} is on stage in "
-                f"{performance['title']}."
-            )
+    validate_new_performance(
+        artist_slug,
+        venue_slug,
+        start,
+        duration,
+        venue_slugs,
+        artist_names,
+    )
 
     performance_id = f"{venue_slug}-{start:%Y-%m-%d-%H%M}"
     festival["performances"].append({
@@ -296,6 +319,11 @@ if len(sys.argv) > 1 and sys.argv[1] == "cancel":
         raise SystemExit(1)
     raise SystemExit
 
+known_commands = {"venues", "artist", "programme", "now", "add", "cancel"}
+
+if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
+    print("Usage: uv run main.py [venues|artist|programme|now|add|cancel]")
+    raise SystemExit(1)
 
 # Step 00
 print(festival["name"])
@@ -350,11 +378,18 @@ for performance in festival["performances"]:
         if artist_id not in artist_order:
             artist_order.append(artist_id)
 
-artists_on_stage_4_times = [
-    artist_id for artist_id in artist_order if artist_appearances[artist_id] == 4
-]
-print("On stage 4 times: " + ", ".join(artists_on_stage_4_times))
+most_appearances = max(artist_appearances.values())
 
+artists_on_stage_most = [
+    artist_id
+    for artist_id in artist_order
+    if artist_appearances[artist_id] == most_appearances
+]
+
+print(
+    f"On stage {most_appearances} times: "
+    + ", ".join(artists_on_stage_most)
+)
 
 # Step 02
 days = sorted({performance["start"][:10] for performance in festival["performances"]})
